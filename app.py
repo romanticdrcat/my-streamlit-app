@@ -20,19 +20,20 @@ ID_TO_KEY = {v["id"]: k for k, v in GENRES.items()}
 
 POSTER_BASE_URL = "https://image.tmdb.org/t/p/w500"
 
-# 장르별 성격(대략값): light(가벼움), pace(속도감), escape(현실탈출)
+# 장르별 성격(대략값): light(가벼움), pace(속도감), escape(현실탈출),
+# emotion(감정선), complexity(복잡도/두뇌), relationship(관계서사)
 GENRE_TRAITS = {
-    "drama":   {"light": 0.20, "pace": 0.35, "escape": 0.20},
-    "romance": {"light": 0.45, "pace": 0.40, "escape": 0.25},
-    "action":  {"light": 0.55, "pace": 0.85, "escape": 0.45},
-    "sf":      {"light": 0.45, "pace": 0.60, "escape": 0.95},
-    "fantasy": {"light": 0.55, "pace": 0.60, "escape": 0.90},
-    "comedy":  {"light": 0.95, "pace": 0.60, "escape": 0.35},
+    "drama":   {"light": 0.20, "pace": 0.35, "escape": 0.20, "emotion": 0.85, "complexity": 0.55, "relationship": 0.75},
+    "romance": {"light": 0.45, "pace": 0.40, "escape": 0.25, "emotion": 0.80, "complexity": 0.45, "relationship": 0.95},
+    "action":  {"light": 0.55, "pace": 0.88, "escape": 0.45, "emotion": 0.30, "complexity": 0.35, "relationship": 0.35},
+    "sf":      {"light": 0.45, "pace": 0.62, "escape": 0.96, "emotion": 0.45, "complexity": 0.80, "relationship": 0.45},
+    "fantasy": {"light": 0.55, "pace": 0.60, "escape": 0.92, "emotion": 0.55, "complexity": 0.60, "relationship": 0.55},
+    "comedy":  {"light": 0.95, "pace": 0.60, "escape": 0.35, "emotion": 0.35, "complexity": 0.30, "relationship": 0.45},
 }
 
 # 베이지안 평균 파라미터(간단 신뢰도 보정)
 BAYES_C = 6.8   # 전체 평균 평점(대략)
-BAYES_M = 500   # 신뢰 임계 투표수(클수록 표본 적은 영화가 평균으로 끌림)
+BAYES_M = 500   # 신뢰 임계 투표수
 
 # -----------------------------
 # 유틸/캐시
@@ -99,77 +100,122 @@ def card_container():
 # -----------------------------
 def profile_from_answers(selected_indices):
     """
-    selected_indices: 각 질문의 선택지 인덱스(0~3)
+    selected_indices: 각 질문의 선택지 인덱스(0~3), 길이=10
     반환:
-      - genre_w: 장르 가중치(dict)
-      - axes: light/pace/escape (0~1)
+      - genre_w: 장르 가중치(dict) (정규화)
+      - axes: light/pace/escape/emotion/complexity/relationship (0~1)
     """
     genre_w = {k: 0.0 for k in GENRES.keys()}
 
-    # 질문별로 0(A)/1(B)/2(C)/3(D)가 어느 장르로 더 기운지(세분화)
-    per_question_map = [
+    # 질문별로 0(A)/1(B)/2(C)/3(D)가 어느 장르로 더 기운지
+    per_question_genre_map = [
         ["drama",   "action", "fantasy", "comedy"],  # Q1
         ["drama",   "action", "sf",      "comedy"],  # Q2
         ["romance", "action", "fantasy", "comedy"],  # Q3
         ["drama",   "action", "sf",      "comedy"],  # Q4
         ["drama",   "action", "sf",      "comedy"],  # Q5
+        ["drama",   "action", "sf",      "comedy"],  # Q6
+        ["drama",   "action", "sf",      "comedy"],  # Q7
+        ["romance", "action", "fantasy", "comedy"],  # Q8
+        ["drama",   "action", "fantasy", "comedy"],  # Q9
+        ["drama",   "action", "sf",      "comedy"],  # Q10
     ]
 
-    # 각 선택지(0~3)가 무드 축에 주는 영향(대략)
-    # 0(A)=감정/여운(무거움, 느림, 현실쪽)
-    # 1(B)=짜릿(가벼움 약간, 빠름, 현실/탈출 중간)
-    # 2(C)=세계관(탈출 높음)
-    # 3(D)=웃김(가벼움 높음)
-    axes = {"light": 0.5, "pace": 0.5, "escape": 0.5}
-
-    axis_delta = {
-        0: {"light": -0.12, "pace": -0.08, "escape": -0.06},
-        1: {"light": +0.05, "pace": +0.18, "escape": +0.05},
-        2: {"light": +0.03, "pace": +0.05, "escape": +0.22},
-        3: {"light": +0.20, "pace": +0.02, "escape": +0.02},
+    axes = {
+        "light": 0.50,
+        "pace": 0.50,
+        "escape": 0.50,
+        "emotion": 0.50,
+        "complexity": 0.50,
+        "relationship": 0.50,
     }
 
+    # 기본 델타(질문 1~5는 이 기본을 주로 쓴다)
+    base_delta = [
+        {"light": -0.10, "pace": -0.08, "escape": -0.06, "emotion": +0.10, "complexity": +0.05, "relationship": +0.10},  # A
+        {"light": +0.03, "pace": +0.18, "escape": +0.05, "emotion": -0.06, "complexity": -0.03, "relationship": -0.05},  # B
+        {"light": +0.02, "pace": +0.05, "escape": +0.22, "emotion": +0.02, "complexity": +0.10, "relationship": -0.02},  # C
+        {"light": +0.18, "pace": +0.02, "escape": +0.02, "emotion": -0.10, "complexity": -0.08, "relationship": -0.02},  # D
+    ]
+
+    # 새로 추가한 5문항(Q6~Q10)은 "특성 측정"을 더 치밀하게 하기 위해 델타를 질문별로 조금 다르게 준다.
+    # (특정 질문에서 complexity/relationship 같은 축이 더 강하게 움직이도록)
+    delta_by_question = [
+        base_delta,  # Q1
+        base_delta,  # Q2
+        base_delta,  # Q3
+        base_delta,  # Q4
+        base_delta,  # Q5
+        # Q6: 분위기 선호 (light/emotion을 조금 더 강하게)
+        [
+            {"light": -0.12, "pace": -0.06, "escape": -0.04, "emotion": +0.14, "complexity": +0.04, "relationship": +0.08},
+            {"light": +0.04, "pace": +0.16, "escape": +0.06, "emotion": -0.06, "complexity": -0.02, "relationship": -0.04},
+            {"light": +0.02, "pace": +0.06, "escape": +0.24, "emotion": +0.02, "complexity": +0.12, "relationship": -0.02},
+            {"light": +0.20, "pace": +0.02, "escape": +0.02, "emotion": -0.12, "complexity": -0.08, "relationship": -0.02},
+        ],
+        # Q7: 전개 방식 (complexity를 더 강하게)
+        [
+            {"light": -0.08, "pace": -0.08, "escape": -0.04, "emotion": +0.10, "complexity": +0.10, "relationship": +0.06},
+            {"light": +0.02, "pace": +0.20, "escape": +0.04, "emotion": -0.06, "complexity": -0.05, "relationship": -0.04},
+            {"light": +0.02, "pace": +0.04, "escape": +0.14, "emotion": +0.00, "complexity": +0.18, "relationship": -0.02},
+            {"light": +0.16, "pace": +0.06, "escape": +0.02, "emotion": -0.08, "complexity": -0.10, "relationship": -0.02},
+        ],
+        # Q8: 관계 서사 (relationship를 더 강하게)
+        [
+            {"light": -0.06, "pace": -0.06, "escape": -0.04, "emotion": +0.12, "complexity": +0.02, "relationship": +0.20},
+            {"light": +0.04, "pace": +0.16, "escape": +0.06, "emotion": -0.06, "complexity": -0.02, "relationship": -0.02},
+            {"light": +0.02, "pace": +0.06, "escape": +0.18, "emotion": +0.04, "complexity": +0.06, "relationship": +0.04},
+            {"light": +0.18, "pace": +0.04, "escape": +0.02, "emotion": -0.10, "complexity": -0.08, "relationship": -0.02},
+        ],
+        # Q9: 좋아하는 장면 (pace/escape/complexity 조금 조정)
+        [
+            {"light": -0.08, "pace": -0.04, "escape": -0.02, "emotion": +0.08, "complexity": +0.08, "relationship": +0.08},
+            {"light": +0.04, "pace": +0.20, "escape": +0.06, "emotion": -0.06, "complexity": -0.02, "relationship": -0.04},
+            {"light": +0.04, "pace": +0.06, "escape": +0.24, "emotion": +0.02, "complexity": +0.10, "relationship": -0.02},
+            {"light": +0.18, "pace": +0.04, "escape": +0.02, "emotion": -0.10, "complexity": -0.08, "relationship": -0.02},
+        ],
+        # Q10: 보고 난 뒤 남는 느낌 (emotion/escape를 조금 더)
+        [
+            {"light": -0.10, "pace": -0.06, "escape": -0.04, "emotion": +0.14, "complexity": +0.04, "relationship": +0.10},
+            {"light": +0.06, "pace": +0.18, "escape": +0.06, "emotion": -0.06, "complexity": -0.03, "relationship": -0.04},
+            {"light": +0.02, "pace": +0.04, "escape": +0.26, "emotion": +0.02, "complexity": +0.12, "relationship": -0.02},
+            {"light": +0.18, "pace": +0.02, "escape": +0.02, "emotion": -0.10, "complexity": -0.08, "relationship": -0.02},
+        ],
+    ]
+
+    # 집계
     for qi, choice_idx in enumerate(selected_indices):
-        g = per_question_map[qi][choice_idx]
+        g = per_question_genre_map[qi][choice_idx]
         genre_w[g] += 1.0
 
-        d = axis_delta[choice_idx]
-        axes["light"] += d["light"]
-        axes["pace"] += d["pace"]
-        axes["escape"] += d["escape"]
+        d = delta_by_question[qi][choice_idx]
+        for k in axes:
+            axes[k] += d.get(k, 0.0)
 
-    # 0~1로 클램프
+    # 클램프
     axes = {k: clamp(v, 0.0, 1.0) for k, v in axes.items()}
 
-    # 0점 방지(혹시라도)
+    # 장르 가중치 정규화
     total = sum(genre_w.values())
     if total <= 0:
         for k in genre_w:
             genre_w[k] = 1.0
         total = sum(genre_w.values())
-
-    # 정규화(합이 1이 되게)
     genre_w = {k: v / total for k, v in genre_w.items()}
 
     return {"genre_w": genre_w, "axes": axes}
 
 def apply_feedback_adjustments(base_profile, fb):
-    """
-    (8) 좋아요/별로예요 피드백을 프로필에 반영한다.
-    fb: {"genre_adj":{...}, "axis_adj":{...}}
-    """
     genre_w = base_profile["genre_w"].copy()
     axes = base_profile["axes"].copy()
 
-    # 장르 가중치에 가산/감산 적용
+    # 장르 가중치에 가산/감산
     genre_adj = fb.get("genre_adj", {})
     for k, delta in genre_adj.items():
         genre_w[k] = max(0.0, genre_w.get(k, 0.0) + delta)
 
-    # 다시 정규화
     s = sum(genre_w.values())
     if s <= 0:
-        # 다 0이 되면 베이스로 복구
         genre_w = base_profile["genre_w"].copy()
     else:
         genre_w = {k: v / s for k, v in genre_w.items()}
@@ -177,7 +223,8 @@ def apply_feedback_adjustments(base_profile, fb):
     # 축 보정
     axis_adj = fb.get("axis_adj", {})
     for k, delta in axis_adj.items():
-        axes[k] = clamp(axes.get(k, 0.5) + delta, 0.0, 1.0)
+        if k in axes:
+            axes[k] = clamp(axes[k] + delta, 0.0, 1.0)
 
     return {"genre_w": genre_w, "axes": axes}
 
@@ -195,19 +242,20 @@ def movie_trait_vector(movie):
     keys = [ID_TO_KEY.get(g) for g in gids if ID_TO_KEY.get(g) in GENRE_TRAITS]
     keys = [k for k in keys if k]
     if not keys:
-        return {"light": 0.5, "pace": 0.5, "escape": 0.5}
-    light = sum(GENRE_TRAITS[k]["light"] for k in keys) / len(keys)
-    pace  = sum(GENRE_TRAITS[k]["pace"] for k in keys) / len(keys)
-    esc   = sum(GENRE_TRAITS[k]["escape"] for k in keys) / len(keys)
-    return {"light": light, "pace": pace, "escape": esc}
+        return {k: 0.5 for k in ["light", "pace", "escape", "emotion", "complexity", "relationship"]}
+
+    out = {}
+    for axis in ["light", "pace", "escape", "emotion", "complexity", "relationship"]:
+        out[axis] = sum(GENRE_TRAITS[k][axis] for k in keys) / len(keys)
+    return out
 
 def trait_alignment(user_axes, movie_axes):
     # 0~1 (1이 더 잘 맞음)
-    dist = math.sqrt(
-        (user_axes["light"] - movie_axes["light"]) ** 2 +
-        (user_axes["pace"] - movie_axes["pace"]) ** 2 +
-        (user_axes["escape"] - movie_axes["escape"]) ** 2
-    ) / math.sqrt(3)
+    axes = ["light", "pace", "escape", "emotion", "complexity", "relationship"]
+    dist2 = 0.0
+    for a in axes:
+        dist2 += (user_axes[a] - movie_axes[a]) ** 2
+    dist = math.sqrt(dist2) / math.sqrt(len(axes))
     return 1.0 - dist
 
 def genre_match_score(user_genre_w, movie):
@@ -217,7 +265,6 @@ def genre_match_score(user_genre_w, movie):
         k = ID_TO_KEY.get(gid)
         if k:
             score += user_genre_w.get(k, 0.0)
-    # 최대 1을 넘지 않게(장르 여러 개면 합이 커질 수 있음)
     return clamp(score, 0.0, 1.0)
 
 def completeness_penalty(movie):
@@ -230,35 +277,31 @@ def completeness_penalty(movie):
 
 def composite_score(profile, movie):
     """
-    (4) 재랭킹 점수: 취향 매칭 + 품질(보정 평점) + 무드 매칭 + 약간의 인기
+    (4) 재랭킹 점수: 취향 매칭 + 품질(보정 평점) + 특성 매칭 + 약간의 인기
     """
     user_genre_w = profile["genre_w"]
     user_axes = profile["axes"]
 
-    # 취향(장르) 매칭
     gmatch = genre_match_score(user_genre_w, movie)
 
-    # 무드 매칭
     maxes = movie_trait_vector(movie)
     align = trait_alignment(user_axes, maxes)
 
-    # 품질(베이지안) 보정 점수
     R = float(movie.get("vote_average", 0) or 0)
     v = int(movie.get("vote_count", 0) or 0)
     bayes = bayesian_rating(R, v)  # 0~10
     bayes_norm = clamp(bayes / 10.0, 0.0, 1.0)
 
-    # 인기(가볍게)
     pop = float(movie.get("popularity", 0) or 0)
     pop_norm = clamp(math.log1p(pop) / math.log1p(1000), 0.0, 1.0)
 
     pen = completeness_penalty(movie)
 
-    # 가중치(취향 중심)
+    # 취향 중심 + "좋은 영화" 보정 강화
     score = (
-        0.50 * gmatch +
-        0.25 * align +
-        0.20 * bayes_norm +
+        0.45 * gmatch +
+        0.27 * align +
+        0.23 * bayes_norm +
         0.05 * pop_norm -
         pen
     )
@@ -282,20 +325,15 @@ def year_similarity(a, b):
     if ya is None or yb is None:
         return 0.0
     d = abs(ya - yb)
-    return clamp(1.0 - (d / 10.0), 0.0, 1.0)  # 10년 이상 차이면 0
+    return clamp(1.0 - (d / 10.0), 0.0, 1.0)
 
 def similarity(a, b):
-    # 장르 유사도 + 연도 유사도
     return 0.75 * genre_jaccard(a, b) + 0.25 * year_similarity(a, b)
 
-def mmr_select(candidates, base_scores, k=5, lam=0.75):
-    """
-    lam: 1에 가까울수록 '점수' 우선, 0에 가까울수록 '다양성' 우선
-    """
+def mmr_select(candidates, base_scores, k=5, lam=0.78):
     selected = []
     remaining = candidates[:]
 
-    # 첫 개는 그냥 최고점
     remaining.sort(key=lambda m: base_scores.get(m["id"], -1e9), reverse=True)
     if not remaining:
         return selected
@@ -320,12 +358,7 @@ def mmr_select(candidates, base_scores, k=5, lam=0.75):
 # -----------------------------
 # 2) 후보 생성 + 3) 추천망 확장 + 4/5) 재랭킹/다양성
 # -----------------------------
-def collect_candidates(api_key: str, profile, per_call=40):
-    """
-    (2) discover로 넓게 후보 생성
-    - 상위 2~3개 장르 단독 + (가능하면) 혼합 장르도 호출
-    """
-    # 선호 장르 상위 3개
+def collect_candidates(api_key: str, profile, per_call=50):
     top = sorted(profile["genre_w"].items(), key=lambda x: x[1], reverse=True)[:3]
     top_keys = [k for k, _ in top]
     top_ids = [GENRES[k]["id"] for k in top_keys]
@@ -355,17 +388,13 @@ def collect_candidates(api_key: str, profile, per_call=40):
 
     return list(candidates.values())
 
-def expand_by_graph(api_key: str, seeds, per_seed=25):
-    """
-    (3) seed 영화들을 기반으로 recommendations + similar로 후보 확장
-    """
+def expand_by_graph(api_key: str, seeds, per_seed=30):
     expanded = {}
     for s in seeds:
         mid = s.get("id")
         if not mid:
             continue
 
-        # recommendations
         try:
             recs = tmdb_recommendations(api_key, int(mid), language="ko-KR", page=1)[:per_seed]
             for m in recs:
@@ -374,7 +403,6 @@ def expand_by_graph(api_key: str, seeds, per_seed=25):
         except Exception:
             pass
 
-        # similar
         try:
             sims = tmdb_similar(api_key, int(mid), language="ko-KR", page=1)[:per_seed]
             for m in sims:
@@ -386,10 +414,6 @@ def expand_by_graph(api_key: str, seeds, per_seed=25):
     return list(expanded.values())
 
 def quality_filter(candidates):
-    """
-    (3) 최소 vote_count 기준을 두되, 후보가 너무 줄면 완화한다.
-    """
-    # 점진적으로 완화
     thresholds = [300, 150, 50, 0]
     for t in thresholds:
         filtered = [m for m in candidates if int(m.get("vote_count", 0) or 0) >= t]
@@ -398,57 +422,47 @@ def quality_filter(candidates):
     return candidates
 
 def generate_recommendations(api_key: str, profile, final_k=5):
-    # (2) 후보 생성
-    base_candidates = collect_candidates(api_key, profile, per_call=50)
-
-    # (3) 최소 품질 필터(너무 과격하면 추천이 비게 되니까 완화 가능)
+    base_candidates = collect_candidates(api_key, profile, per_call=55)
     base_candidates = quality_filter(base_candidates)
 
-    # (4) 1차 점수화 -> seed 선정
     base_scores = {m["id"]: composite_score(profile, m) for m in base_candidates if m.get("id")}
     seeds = sorted(base_candidates, key=lambda m: base_scores.get(m["id"], -1e9), reverse=True)[:3]
 
-    # (3) 추천망 확장
-    expanded = expand_by_graph(api_key, seeds, per_seed=30)
+    expanded = expand_by_graph(api_key, seeds, per_seed=35)
 
-    # 합치고 중복 제거
     merged = {}
     for m in base_candidates + expanded:
         if m.get("id"):
             merged[m["id"]] = m
     candidates = list(merged.values())
 
-    # (3) 확장 후에도 품질 필터 한 번 더
     candidates = quality_filter(candidates)
 
-    # (4) 재랭킹 점수 계산
     scores = {m["id"]: composite_score(profile, m) for m in candidates if m.get("id")}
+    candidates_sorted = sorted(candidates, key=lambda m: scores.get(m["id"], -1e9), reverse=True)[:90]
 
-    # 점수순으로 상위만 조금 잘라서 다양성 선택(속도/품질 균형)
-    candidates_sorted = sorted(candidates, key=lambda m: scores.get(m["id"], -1e9), reverse=True)[:80]
-
-    # (5) 다양성 선택(MMR)
     selected = mmr_select(candidates_sorted, scores, k=final_k, lam=0.78)
-
     return selected, scores
 
 def build_reason(profile, movie):
-    """
-    사용자 축(가벼움/속도/탈출)과 영화 trait을 비교해 간단 이유를 만든다.
-    """
     u = profile["axes"]
     m = movie_trait_vector(movie)
 
-    # 가장 큰 차이/강점을 한두 줄로
     parts = []
-    if u["escape"] >= 0.62 and m["escape"] >= 0.65:
-        parts.append("현실 탈출/세계관 몰입 포인트가 강하다")
-    if u["pace"] >= 0.62 and m["pace"] >= 0.65:
-        parts.append("전개가 비교적 빠르고 시원하다")
-    if u["light"] >= 0.62 and m["light"] >= 0.70:
-        parts.append("가볍게 즐기기 좋다")
-    if u["light"] <= 0.40 and m["light"] <= 0.45:
-        parts.append("여운/감정선 쪽 만족도가 높을 가능성이 크다")
+
+    # 가장 잘 맞는 축 1~2개만 잡아서 "설명"을 설득력 있게
+    def pick(axis, label, high_msg, low_msg=None):
+        if u[axis] >= 0.62 and m[axis] >= 0.62:
+            parts.append(high_msg)
+        elif (low_msg is not None) and (u[axis] <= 0.40 and m[axis] <= 0.45):
+            parts.append(low_msg)
+
+    pick("escape", "현실탈출", "세계관/비현실적 몰입 포인트가 강하다")
+    pick("pace", "속도감", "전개가 빠르고 템포가 시원하다", "잔잔하게 쌓아가는 전개가 잘 맞는다")
+    pick("light", "가벼움", "가볍게 즐기기 좋은 톤이다", "묵직한 여운이 남는 톤이다")
+    pick("emotion", "감정선", "감정선/여운 포인트가 살아있다")
+    pick("complexity", "복잡도", "설정·구조를 파고드는 재미가 있다")
+    pick("relationship", "관계", "관계/케미 중심의 재미가 있다")
 
     if not parts:
         parts.append("네 선택 흐름과 잘 맞는 결의 작품이다")
@@ -456,9 +470,9 @@ def build_reason(profile, movie):
     vote = float(movie.get("vote_average", 0) or 0)
     vcnt = int(movie.get("vote_count", 0) or 0)
     bayes = bayesian_rating(vote, vcnt)
+    parts.append(f"보정 평점 기준으로도 무난하다(보정 {bayes:.1f})")
 
-    parts.append(f"평점 신뢰도 보정 기준으로도 무난하다(보정 평점 {bayes:.1f})")
-    return " · ".join(parts)
+    return " · ".join(parts[:3])  # 너무 길어지지 않게 3개까지만
 
 # -----------------------------
 # (8) 피드백 저장/적용
@@ -467,44 +481,36 @@ def init_state():
     if "base_profile" not in st.session_state:
         st.session_state.base_profile = None
     if "feedback" not in st.session_state:
-        # 장르/축 조정값 누적
-        st.session_state.feedback = {"genre_adj": {k: 0.0 for k in GENRES.keys()},
-                                     "axis_adj": {"light": 0.0, "pace": 0.0, "escape": 0.0}}
+        st.session_state.feedback = {
+            "genre_adj": {k: 0.0 for k in GENRES.keys()},
+            "axis_adj": {k: 0.0 for k in ["light", "pace", "escape", "emotion", "complexity", "relationship"]},
+        }
     if "recs" not in st.session_state:
         st.session_state.recs = None
-    if "last_genre_title" not in st.session_state:
-        st.session_state.last_genre_title = None
 
 def add_feedback(movie, like: bool):
-    """
-    좋아요면 +, 별로예요면 - 로 프로필 조정치를 누적한다.
-    """
     sign = 1.0 if like else -1.0
+
+    # 장르 가중치 조정
     gids = movie.get("genre_ids", []) or []
     for gid in gids:
         k = ID_TO_KEY.get(gid)
         if k:
-            st.session_state.feedback["genre_adj"][k] += sign * 0.08  # 너무 세지 않게
+            st.session_state.feedback["genre_adj"][k] += sign * 0.08
             st.session_state.feedback["genre_adj"][k] = clamp(st.session_state.feedback["genre_adj"][k], -0.25, 0.25)
 
-    # 축도 살짝 조정(장르 trait 기반)
+    # 축 조정: 영화 trait 방향으로 살짝 끌어가기(좋아요) / 반대로(별로예요)
     mk = [ID_TO_KEY.get(g) for g in gids if ID_TO_KEY.get(g) in GENRE_TRAITS]
     mk = [x for x in mk if x]
     if mk:
-        t = {
-            "light": sum(GENRE_TRAITS[x]["light"] for x in mk) / len(mk),
-            "pace": sum(GENRE_TRAITS[x]["pace"] for x in mk) / len(mk),
-            "escape": sum(GENRE_TRAITS[x]["escape"] for x in mk) / len(mk),
-        }
-        # 좋아요면 사용자 축을 영화 방향으로 조금 끌어가고, 싫어요면 반대로
-        # (너무 튀지 않게 작은 스텝)
-        step = 0.05 * sign
-        st.session_state.feedback["axis_adj"]["light"] += (t["light"] - 0.5) * step
-        st.session_state.feedback["axis_adj"]["pace"] += (t["pace"] - 0.5) * step
-        st.session_state.feedback["axis_adj"]["escape"] += (t["escape"] - 0.5) * step
+        t = {}
+        for axis in ["light", "pace", "escape", "emotion", "complexity", "relationship"]:
+            t[axis] = sum(GENRE_TRAITS[x][axis] for x in mk) / len(mk)
 
-        for k in ["light", "pace", "escape"]:
-            st.session_state.feedback["axis_adj"][k] = clamp(st.session_state.feedback["axis_adj"][k], -0.20, 0.20)
+        step = 0.05 * sign
+        for axis in ["light", "pace", "escape", "emotion", "complexity", "relationship"]:
+            st.session_state.feedback["axis_adj"][axis] += (t[axis] - 0.5) * step
+            st.session_state.feedback["axis_adj"][axis] = clamp(st.session_state.feedback["axis_adj"][axis], -0.20, 0.20)
 
 # -----------------------------
 # UI
@@ -512,8 +518,7 @@ def add_feedback(movie, like: bool):
 init_state()
 
 st.title("🎬 나와 어울리는 영화는?")
-st.write("간단한 심리테스트로 지금의 너와 가장 잘 어울리는 영화 취향을 알아보자 😎")
-st.write("아래 5개 질문에 답하고 **결과 보기**를 누르면, TMDB 기반으로 맞춤 추천이 나온다.")
+st.write("심리테스트 10문항으로 취향을 더 촘촘히 잡아서, TMDB 기반으로 맞춤 추천을 해준다 😎")
 st.write("추천 결과에서 👍/👎 피드백을 주면 다음 추천이 더 정확해진다.")
 
 st.sidebar.header("TMDB 설정")
@@ -521,6 +526,11 @@ api_key = st.sidebar.text_input("TMDB API Key", type="password", placeholder="�
 
 st.divider()
 
+# -----------------------------
+# 심리테스트 문항 (기존 5 + 신규 5)
+# - 선택지 뒤에 장르명 노출 없음
+# - 4지선다
+# -----------------------------
 QUESTIONS = [
     (
         "Q1. 완전 지친 날, 너는 어떻게 기분을 돌려?",
@@ -567,21 +577,60 @@ QUESTIONS = [
             "D. 끝까지 기분 좋고, 나도 모르게 미소 짓는 엔딩",
         ],
     ),
+
+    # --- 신규 5문항(특성 측정 강화) ---
+    (
+        "Q6. 오늘 너가 보고 싶은 분위기는?",
+        [
+            "A. 잔잔하게 마음을 건드리는 이야기",
+            "B. 긴장감/스릴로 몰입되는 이야기",
+            "C. 신비한 규칙과 세계를 알아가는 이야기",
+            "D. 가볍게 웃고 기분이 풀리는 이야기",
+        ],
+    ),
+    (
+        "Q7. 스토리 진행 방식 중 더 끌리는 건?",
+        [
+            "A. 인물의 감정이 조금씩 쌓이는 전개",
+            "B. 목표를 향해 직진하는 전개",
+            "C. 떡밥/반전이 있어 머리 쓰는 전개",
+            "D. 예상 못한 상황이 연속으로 터지는 전개",
+        ],
+    ),
+    (
+        "Q8. 관계 서사에서 너가 특히 좋아하는 맛은?",
+        [
+            "A. 둘 사이의 감정 변화와 케미",
+            "B. 위기에서 서로 등을 맡기는 전우애",
+            "C. 운명/예언 같은 거대한 연결고리",
+            "D. 티키타카가 살아있는 코믹한 케미",
+        ],
+    ),
+    (
+        "Q9. 영화에서 특히 좋아하는 장면은?",
+        [
+            "A. 대사 한 줄로 분위기가 바뀌는 장면",
+            "B. 추격/전투/도전 같은 하이라이트 장면",
+            "C. 상상도 못한 비주얼/세계가 펼쳐지는 장면",
+            "D. 한 장면이 밈이 될 만큼 웃긴 장면",
+        ],
+    ),
+    (
+        "Q10. 영화 보고 나서 남았으면 하는 느낌은?",
+        [
+            "A. 마음이 먹먹하거나 따뜻해서 오래 생각남",
+            "B. “와 시원하다” 하고 기분 업됨",
+            "C. “이 세계관 더 알고 싶다” 하고 파고들고 싶음",
+            "D. 친구한테 바로 공유하고 싶을 만큼 웃김",
+        ],
+    ),
 ]
 
 selected_indices = []
 for i, (q, options) in enumerate(QUESTIONS, start=1):
     st.subheader(q)
-    choice = st.radio(
-        label="",
-        options=options,
-        index=None,
-        key=f"q{i}",
-    )
-    if choice is None:
-        selected_indices.append(None)
-    else:
-        selected_indices.append(options.index(choice))
+    choice = st.radio(label="", options=options, index=None, key=f"q{i}")
+    selected_indices.append(None if choice is None else options.index(choice))
 
 st.divider()
 
@@ -599,35 +648,34 @@ def top_genre_title(profile):
     return f"당신에게 딱인 장르는: {GENRES[gk]['name']}!"
 
 def render_results(api_key, base_profile):
-    # 피드백 반영한 최종 프로필
     profile = apply_feedback_adjustments(base_profile, st.session_state.feedback)
 
     with st.spinner("분석 중..."):
-        recs, scores = generate_recommendations(api_key, profile, final_k=5)
+        recs, _scores = generate_recommendations(api_key, profile, final_k=5)
 
     st.session_state.recs = recs
-    st.session_state.last_genre_title = top_genre_title(profile)
 
-    # 결과 제목
-    st.markdown(f"# {st.session_state.last_genre_title}")
-    st.write("아래 추천은 **취향(장르/무드) + 보정 평점(신뢰도) + 다양성**까지 고려해서 뽑은 리스트다 👇")
+    st.markdown(f"# {top_genre_title(profile)}")
+    st.write("아래 추천은 **취향(장르+특성) + 보정 평점(신뢰도) + 다양성**까지 고려해서 뽑은 리스트다 👇")
 
-    with st.expander("내 취향 벡터 보기"):
+    with st.expander("내 취향 분석 보기"):
         gw = profile["genre_w"]
         ax = profile["axes"]
         st.write("**장르 가중치(정규화)**")
         st.write(", ".join([f"{GENRES[k]['name']} {gw[k]:.2f}" for k in sorted(gw, key=gw.get, reverse=True)]))
-        st.write("**무드 축(0~1)**")
-        st.write(f"가벼움 {ax['light']:.2f} · 속도감 {ax['pace']:.2f} · 현실탈출 {ax['escape']:.2f}")
+        st.write("**취향 특성(0~1)**")
+        st.write(
+            f"가벼움 {ax['light']:.2f} · 속도감 {ax['pace']:.2f} · 현실탈출 {ax['escape']:.2f}\n\n"
+            f"감정선 {ax['emotion']:.2f} · 복잡도 {ax['complexity']:.2f} · 관계서사 {ax['relationship']:.2f}"
+        )
 
     if not recs:
         st.info("추천할 영화가 부족하다. 다른 선택으로 다시 시도해줘.")
         return
 
     st.markdown("## 🎞️ 추천 영화")
-    st.caption("카드 안에서 상세 정보를 펼치고, 👍/👎로 취향을 더 정교하게 만들 수 있다.")
+    st.caption("카드에서 상세 정보를 펼치고, 👍/👎로 취향을 더 정교하게 만들 수 있다.")
 
-    # 3열 카드
     cols = st.columns(3, gap="large")
     for idx, movie in enumerate(recs):
         col = cols[idx % 3]
@@ -638,7 +686,6 @@ def render_results(api_key, base_profile):
         vcnt = int(movie.get("vote_count", 0) or 0)
         overview = (movie.get("overview") or "").strip() or "줄거리 정보가 부족하다."
         poster_url = build_poster_url(movie.get("poster_path"))
-
         reason = build_reason(profile, movie)
 
         with col:
@@ -651,12 +698,11 @@ def render_results(api_key, base_profile):
                 st.markdown(f"### {title}")
                 st.write(f"⭐ 평점: {vote:.1f}  (투표 {vcnt:,}개)")
 
-                # 피드백 버튼
                 b1, b2 = st.columns(2)
                 with b1:
-                    like_clicked = st.button("👍 좋아요", key=f"like_{mid}", use_container_width=True)
+                    like_clicked = st.button("👍 좋아요", key=f"like_{mid}_{idx}", use_container_width=True)
                 with b2:
-                    dislike_clicked = st.button("👎 별로예요", key=f"dislike_{mid}", use_container_width=True)
+                    dislike_clicked = st.button("👎 별로예요", key=f"dislike_{mid}_{idx}", use_container_width=True)
 
                 if like_clicked:
                     add_feedback(movie, like=True)
@@ -671,7 +717,7 @@ def render_results(api_key, base_profile):
                     st.write(f"**이 영화를 추천하는 이유**: {reason}")
 
     st.markdown("---")
-    st.write("✅ 추천이 마음에 들면 👍을, 별로면 👎을 눌러줘. 그 다음 **추천 새로 고침(피드백 반영)**을 누르면 추천이 더 맞춰진다.")
+    st.write("✅ 추천이 마음에 들면 👍, 별로면 👎을 눌러줘. 그 다음 **추천 새로 고침(피드백 반영)**을 누르면 추천이 더 맞춰진다.")
 
 # -----------------------------
 # 버튼 동작
@@ -682,12 +728,14 @@ if run_btn:
         st.stop()
 
     if any(x is None for x in selected_indices):
-        st.warning("아직 선택하지 않은 질문이 있다. 5개 모두 답해줘!")
+        st.warning("아직 선택하지 않은 질문이 있다. 10개 모두 답해줘!")
         st.stop()
 
-    # 새 테스트 결과면 피드백 초기화(원하면 유지로 바꿔도 됨)
-    st.session_state.feedback = {"genre_adj": {k: 0.0 for k in GENRES.keys()},
-                                 "axis_adj": {"light": 0.0, "pace": 0.0, "escape": 0.0}}
+    # 새 테스트 결과면 피드백 초기화
+    st.session_state.feedback = {
+        "genre_adj": {k: 0.0 for k in GENRES.keys()},
+        "axis_adj": {k: 0.0 for k in ["light", "pace", "escape", "emotion", "complexity", "relationship"]},
+    }
 
     st.session_state.base_profile = profile_from_answers(selected_indices)
     render_results(api_key, st.session_state.base_profile)
@@ -704,17 +752,16 @@ elif rerun_btn:
     render_results(api_key, st.session_state.base_profile)
 
 else:
-    # 이미 결과가 나온 상태라면(예: 버튼 클릭 후 rerun) 화면 유지
+    # 결과가 이미 있으면 화면 유지(불필요 API 호출 방지)
     if st.session_state.base_profile is not None and st.session_state.recs is not None:
-        # 현재 피드백이 반영된 프로필로 타이틀만 다시 계산해서 보여주기
         profile = apply_feedback_adjustments(st.session_state.base_profile, st.session_state.feedback)
         st.markdown(f"# {top_genre_title(profile)}")
-        st.write("이미 추천이 생성된 상태다. 아래에서 👍/👎 피드백을 주고 새로 고침하면 추천이 더 정확해진다.")
+        st.write("이미 추천이 생성된 상태다. 👍/👎 피드백을 주고 **추천 새로 고침**을 누르면 추천이 더 정확해진다.")
 
-        # 저장된 추천 재렌더(불필요한 API 호출 방지)
         recs = st.session_state.recs
         st.markdown("## 🎞️ 추천 영화")
         cols = st.columns(3, gap="large")
+
         for idx, movie in enumerate(recs):
             col = cols[idx % 3]
 
@@ -724,7 +771,6 @@ else:
             vcnt = int(movie.get("vote_count", 0) or 0)
             overview = (movie.get("overview") or "").strip() or "줄거리 정보가 부족하다."
             poster_url = build_poster_url(movie.get("poster_path"))
-
             reason = build_reason(profile, movie)
 
             with col:
@@ -739,9 +785,9 @@ else:
 
                     b1, b2 = st.columns(2)
                     with b1:
-                        like_clicked = st.button("👍 좋아요", key=f"like_keep_{mid}", use_container_width=True)
+                        like_clicked = st.button("👍 좋아요", key=f"like_keep_{mid}_{idx}", use_container_width=True)
                     with b2:
-                        dislike_clicked = st.button("👎 별로예요", key=f"dislike_keep_{mid}", use_container_width=True)
+                        dislike_clicked = st.button("👎 별로예요", key=f"dislike_keep_{mid}_{idx}", use_container_width=True)
 
                     if like_clicked:
                         add_feedback(movie, like=True)
@@ -757,4 +803,6 @@ else:
 
         st.markdown("---")
         st.write("👉 피드백 후에는 **추천 새로 고침(피드백 반영)** 버튼을 눌러야 추천 리스트가 새로 계산된다.")
+
+
 
