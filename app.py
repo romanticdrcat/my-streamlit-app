@@ -1,51 +1,74 @@
 import streamlit as st
-from openai import OpenAI
 
-st.title("🤖 나의 AI 챗봇")
+st.set_page_config(page_title="나와 어울리는 영화는?", page_icon="🎬")
 
-# 사이드바에서 API Key 입력
-api_key = st.sidebar.text_input("OpenAI API Key", type="password")
-mood_options = {
-    "기분 좋음": "밝고 즐거운 톤으로 대화를 이어가세요.",
-    "평온함": "차분하고 안정적인 톤으로 대화를 이어가세요.",
-    "우울함": "따뜻하고 위로가 되는 톤으로 대화를 이어가세요.",
-    "불안함": "안심을 주는 톤으로 차근차근 설명하세요.",
-    "화남": "공감하며 침착하게 대화를 이어가세요.",
-}
-mood = st.sidebar.selectbox("현재 기분 선택", list(mood_options.keys()))
+st.title("🎬 나와 어울리는 영화는?")
+st.write("간단한 심리테스트로 지금의 너와 가장 잘 어울리는 영화 취향을 가볍게 알아보자! 😎")
+st.write("아래 5개 질문에 답하고 **결과 보기**를 눌러줘.")
 
-# 대화 기록 초기화
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# 질문/선택지 데이터
+questions = [
+    {
+        "q": "Q1. 완전 지친 날, 너는 어떻게 기분을 돌려?",
+        "options": [
+            "A. 누군가랑 조용히 이야기하면서 마음이 정리되는 편이다 (로맨스/드라마)",
+            "B. 몸 좀 움직이거나 짜릿한 걸 해야 스트레스가 풀린다 (액션/어드벤처)",
+            "C. 현실에서 잠깐 탈출해서 다른 세계에 다녀오고 싶다 (SF/판타지)",
+            "D. 웃긴 거 보면서 “아 됐다” 하고 털어버린다 (코미디)",
+        ],
+    },
+    {
+        "q": "Q2. 너가 끌리는 주인공 타입은?",
+        "options": [
+            "A. 상처나 사연이 있지만 결국 성장하는 사람 (로맨스/드라마)",
+            "B. 말보다 행동! 위기에서 해결해버리는 사람 (액션/어드벤처)",
+            "C. 남들이 못 보는 진실을 알아차리는 사람/특별한 존재 (SF/판타지)",
+            "D. 허당인데 매력 있어서 자꾸 응원하게 되는 사람 (코미디)",
+        ],
+    },
+    {
+        "q": "Q3. 여행을 간다면 너의 코스는?",
+        "options": [
+            "A. 분위기 좋은 거리 걷고, 예쁜 카페 가고, 감성 사진 찍기 (로맨스/드라마)",
+            "B. 액티비티 풀코스! 서핑/등산/짚라인 같은 거 하고 싶다 (액션/어드벤처)",
+            "C. 자연경관 끝내주는 곳이나 신비로운 유적지에서 세계관 충전 (SF/판타지)",
+            "D. 계획은 대충! 길 가다 재밌는 거 있으면 그때그때 즐기기 (코미디)",
+        ],
+    },
+    {
+        "q": "Q4. 갑자기 큰 문제가 터졌을 때 너의 반응은?",
+        "options": [
+            "A. “왜 이런 일이…” 감정부터 정리하고 나서 움직인다 (로맨스/드라마)",
+            "B. 일단 해결부터! 바로 행동하고 부딪힌다 (액션/어드벤처)",
+            "C. 원인/구조를 분석한다. 숨은 규칙이 있을 것 같다 (SF/판타지)",
+            "D. 일단 웃긴 말 한 번 던지고 분위기부터 살린다 (코미디)",
+        ],
+    },
+    {
+        "q": "Q5. 너가 가장 좋아하는 엔딩 느낌은?",
+        "options": [
+            "A. 마음이 꽉 차면서 여운이 오래 남는 엔딩 (로맨스/드라마)",
+            "B. “와 미쳤다…” 한 방 크게 터지고 시원한 엔딩 (액션/어드벤처)",
+            "C. 반전/확장/떡밥! 상상하게 만드는 엔딩 (SF/판타지)",
+            "D. 끝까지 기분 좋고, 나도 모르게 미소 짓는 엔딩 (코미디)",
+        ],
+    },
+]
 
-# 이전 대화 표시
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+st.divider()
 
-# 사용자 입력 처리
-if prompt := st.chat_input("메시지를 입력하세요"):
-    if not api_key:
-        st.error("⚠️ 사이드바에서 API Key를 입력해주세요!")
-    else:
-        system_message = (
-            "너는 친절한 한국어 챗봇이야. "
-            f"사용자의 현재 기분은 '{mood}'이며, "
-            f"{mood_options[mood]}"
-        )
-        # 사용자 메시지 저장 및 표시
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # AI 응답 생성
-        with st.chat_message("assistant"):
-            client = OpenAI(api_key=api_key)
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "system", "content": system_message}]
-                + st.session_state.messages
-            )
-            reply = response.choices[0].message.content
-            st.markdown(reply)
-            st.session_state.messages.append({"role": "assistant", "content": reply})
+answers = []
+for idx, item in enumerate(questions, start=1):
+    st.subheader(item["q"])
+    ans = st.radio(
+        label="",
+        options=item["options"],
+        index=None,              # 선택 안 한 상태로 시작 (Streamlit 최신 버전 기준)
+        key=f"q{idx}",
+    )
+    answers.append(ans)
+
+st.divider()
+
+if st.button("결과 보기", type="primary"):
+    st.write("분석 중...")
